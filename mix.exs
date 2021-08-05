@@ -51,7 +51,11 @@ defmodule OpentelemetryOban.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:opentelemetry, github: "qdentity/opentelemetry-erlang", ref: "dvic-refactor-sampler", sparse: "apps/opentelemetry", override: true},
+      {:opentelemetry,
+       github: "qdentity/opentelemetry-erlang",
+       ref: "dvic-refactor-sampler",
+       sparse: "apps/opentelemetry",
+       override: true},
       # {:opentelemetry_api, github: "qdentity/opentelemetry-erlang", ref: "dvic-refactor-sampler", sparse: "apps/opentelemetry_api", override: true},
       {:opentelemetry_telemetry, "~> 1.0.0-beta"},
       {:telemetry, "~> 0.4 or ~> 1.0"},
