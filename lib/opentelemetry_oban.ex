@@ -49,9 +49,9 @@ defmodule OpentelemetryOban do
 
   @type setup_opts :: [duration() | sampler()]
   @type duration :: {:duration, {atom(), System.time_unit()}}
-  @type sampler :: {:sampler, :otel_sampler.instance() | sampler_fun() | nil}
+  @type sampler :: {:sampler, :otel_sampler.t() | sampler_fun() | nil}
 
-  @type sampler_fun :: (telemetry_data() -> :otel_sampler.instance() | nil)
+  @type sampler_fun :: (telemetry_data() -> :otel_sampler.t() | nil)
   @type telemetry_data :: %{event: [atom()], measurements: map(), meta: map()}
 
   @doc """
