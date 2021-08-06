@@ -33,13 +33,25 @@ defmodule OpentelemetryOban do
                  Enum.map([:start, :stop, :exception], fn event_name ->
                    [:oban, event_kind, event_name]
                  end)
-               end) ++ [[:oban, :circuit, :trip], [:oban, :circuit, :open]]
+               end) ++
+                 Enum.flat_map(
+                   [:fetch_jobs, :complete_job, :discard_job, :error_job, :snooze_job, :cancel_job],
+                   fn event_kind ->
+                     Enum.map([:start, :stop, :exception], fn event_name ->
+                       [:oban, :engine, event_kind, event_name]
+                     end)
+                   end
+                 ) ++
+                 Enum.map([:start, :stop, :exception], fn event_name ->
+                   [:oban, :notifier, :notify, event_name]
+                 end) ++
+                 [[:oban, :circuit, :trip], [:oban, :circuit, :open]]
 
   @type setup_opts :: [duration() | sampler()]
   @type duration :: {:duration, {atom(), System.time_unit()}}
-  @type sampler :: {:sampler, :otel_sampler.instance() | sampler_fun() | nil}
+  @type sampler :: {:sampler, :otel_sampler.t() | sampler_fun() | nil}
 
-  @type sampler_fun :: (telemetry_data() -> :otel_sampler.instance() | nil)
+  @type sampler_fun :: (telemetry_data() -> :otel_sampler.t() | nil)
   @type telemetry_data :: %{event: [atom()], measurements: map(), meta: map()}
 
   @doc """
@@ -66,11 +78,24 @@ defmodule OpentelemetryOban do
     :telemetry.attach_many(__MODULE__, @event_names, &process_event/4, config)
   end
 
-  defguardp oban_kind?(kind) when kind in [:job, :producer, :plugin]
-
   @doc false
-  def process_event([:oban, event_kind, :start] = event, measurements, meta, config)
-      when oban_kind?(event_kind) do
+  def process_event([:oban, event, event_kind, :start] = meta_event, measurements, meta, config) do
+    span_name = span_name({event, event_kind}, meta)
+    attributes = start_attributes({event, event_kind}, measurements, meta, config)
+
+    start_opts =
+      %{kind: :internal}
+      |> maybe_put_sampler(config.sampler, %{
+        event: meta_event,
+        measurements: measurements,
+        meta: meta
+      })
+
+    OpentelemetryTelemetry.start_telemetry_span(@tracer_id, span_name, meta, start_opts)
+    |> Span.set_attributes(attributes)
+  end
+
+  def process_event([:oban, event_kind, :start] = event, measurements, meta, config) do
     span_name = span_name(event_kind, meta)
     attributes = start_attributes(event_kind, measurements, meta, config)
 
@@ -82,11 +107,19 @@ defmodule OpentelemetryOban do
     |> Span.set_attributes(attributes)
   end
 
-  def process_event([:oban, event_kind, :stop], measurements, meta, config)
-      when oban_kind?(event_kind) do
+  def process_event([:oban, event_kind, :stop], measurements, meta, config) do
     ctx = OpentelemetryTelemetry.set_current_telemetry_span(@tracer_id, meta)
 
     attributes = stop_attributes(event_kind, measurements, meta, config)
+    Span.set_attributes(ctx, attributes)
+
+    OpentelemetryTelemetry.end_telemetry_span(@tracer_id, meta)
+  end
+
+  def process_event([:oban, event, event_kind, :stop], measurements, meta, config) do
+    ctx = OpentelemetryTelemetry.set_current_telemetry_span(@tracer_id, meta)
+
+    attributes = stop_attributes({event, event_kind}, measurements, meta, config)
     Span.set_attributes(ctx, attributes)
 
     OpentelemetryTelemetry.end_telemetry_span(@tracer_id, meta)
@@ -103,19 +136,30 @@ defmodule OpentelemetryOban do
     OpentelemetryTelemetry.end_telemetry_span(@tracer_id, meta)
   end
 
-  def process_event([:oban, :circuit, :trip], measurements, meta, config) do
+  def process_event([:oban, event, event_kind, :exception], measurements, meta, config) do
+    ctx = OpentelemetryTelemetry.set_current_telemetry_span(@tracer_id, meta)
+
+    attributes = exception_attributes({event, event_kind}, measurements, meta, config)
+    Span.set_attributes(ctx, attributes)
+
+    register_exception_event({event, event_kind}, ctx, meta)
+
+    OpentelemetryTelemetry.end_telemetry_span(@tracer_id, meta)
+  end
+
+  def process_event([:oban, :circuit = event_kind, :trip], measurements, meta, config) do
     ctx =
       OpentelemetryTelemetry.start_telemetry_span(@tracer_id, "Oban circuit tripped", meta, %{
         kind: :internal
       })
 
     attributes =
-      exception_attributes(:circuit, measurements, meta, config) ++
+      exception_attributes(event_kind, measurements, meta, config) ++
         [{"oban.event", "circuit_tripped"}]
 
     Span.set_attributes(ctx, attributes)
 
-    register_exception_event(:circuit, ctx, meta)
+    register_exception_event(event_kind, ctx, meta)
 
     OpentelemetryTelemetry.end_telemetry_span(@tracer_id, meta)
   end
@@ -130,6 +174,14 @@ defmodule OpentelemetryOban do
 
   defp span_name(:plugin, %{plugin: plugin}) do
     "Oban plugin #{module_to_string(plugin)}"
+  end
+
+  defp span_name({:engine, event_name}, _meta) do
+    "Oban engine #{event_name}"
+  end
+
+  defp span_name({:notifier, event_name}, _meta) do
+    "Oban notifier #{event_name}"
   end
 
   defp start_attributes(
@@ -169,6 +221,21 @@ defmodule OpentelemetryOban do
     [
       {"oban.event", "plugin"},
       {"oban.plugin", module_to_string(plugin)}
+    ]
+  end
+
+  defp start_attributes({:engine, event}, _measurements, %{engine: engine}, _config) do
+    [
+      {"oban.event", "engine"},
+      {"oban.engine", module_to_string(engine)},
+      {"oban.engine_operation", event}
+    ]
+  end
+
+  defp start_attributes({:notifier, event}, _measurements, _meta, _config) do
+    [
+      {"oban.event", "notifier"},
+      {"oban.subevent", event}
     ]
   end
 
@@ -216,31 +283,15 @@ defmodule OpentelemetryOban do
 
   defp exception_attributes(_event_kind, _measurements, _meta, _config), do: []
 
-  defp register_exception_event(event_kind, ctx, %{
+  defp register_exception_event(_event_kind, ctx, %{
          kind: kind,
          reason: reason,
          stacktrace: stacktrace
-       })
-       when event_kind in [:plugin, :producer] do
+       }) do
     {[reason: reason], attrs} = Reason.normalize(reason) |> Keyword.split([:reason])
 
     exception = Exception.normalize(kind, reason, stacktrace)
     message = Exception.message(exception)
-
-    Span.record_exception(ctx, exception, stacktrace, attrs)
-    Span.set_status(ctx, OpenTelemetry.status(:error, message))
-  end
-
-  defp register_exception_event(
-         event_kind,
-         ctx,
-         %{error: error, stacktrace: stacktrace, message: message} = meta
-       )
-       when event_kind in [:job, :circuit] do
-    {[reason: reason], attrs} = Reason.normalize(error) |> Keyword.split([:reason])
-
-    kind = Map.get(meta, :kind, :error)
-    exception = Exception.normalize(kind, reason, stacktrace)
 
     Span.record_exception(ctx, exception, stacktrace, attrs)
     Span.set_status(ctx, OpenTelemetry.status(:error, message))
