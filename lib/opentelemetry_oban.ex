@@ -35,7 +35,17 @@ defmodule OpentelemetryOban do
                  end)
                end) ++
                  Enum.flat_map(
-                   [:fetch_jobs, :complete_job, :discard_job, :error_job, :snooze_job, :cancel_job],
+                   [
+                     :init,
+                     :refresh,
+                     :put_meta,
+                     :fetch_jobs,
+                     :complete_job,
+                     :discard_job,
+                     :error_job,
+                     :snooze_job,
+                     :cancel_job
+                   ],
                    fn event_kind ->
                      Enum.map([:start, :stop, :exception], fn event_name ->
                        [:oban, :engine, event_kind, event_name]
