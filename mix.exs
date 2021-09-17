@@ -52,9 +52,9 @@ defmodule OpentelemetryOban.MixProject do
   defp deps do
     [
       {:opentelemetry, "~> 1.0.0-rc"},
-      {:oban, github: "qdentity/oban", ref: "fork"},
+      {:oban, "~> 2.9.0"},
       {:opentelemetry_telemetry, "~> 1.0.0-beta"},
-      {:telemetry, "~> 0.4 or ~> 1.0"},
+      {:telemetry, "~> 1.0", override: true},
       {:ex_doc, "~> 0.24", only: [:dev], runtime: false},
       {:dialyxir, "~> 1.1", only: [:dev, :test], runtime: false}
     ]
